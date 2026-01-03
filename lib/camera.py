@@ -13,6 +13,7 @@ import subprocess
 import re
 import traceback
 from typing import Optional
+from threading import Lock
 
 # External imports
 from zwoasi import Camera
@@ -411,6 +412,7 @@ class PueoStarCamera(Camera):
         # TODO: Implement Camera Retry in case of error.
 
         self.id = None
+        self._lock = Lock()  # Camera lock
         self.initialize_camera()
 
         try:
@@ -460,6 +462,16 @@ class PueoStarCamera(Camera):
             # print('No cameras found. Exiting ')
             # TODO: Should exit here
             # sys.exit(0)
+
+    def set_control_value(self, control_type, value, auto=False):
+        """Thread-safe update to prevent camera control changes during active exposure."""
+        with self._lock:
+            super().set_control_value(control_type, value, auto)
+
+    def capture(self, initial_sleep=0.01, poll=0.01, buffer_=None, filename=None):
+        """Perform a thread-safe image capture while blocking control changes during exposure."""
+        with self._lock:
+            return super().capture(initial_sleep, poll, buffer_, filename)
 
     def camera_usb_info(self):
         """
