@@ -674,23 +674,43 @@ class SourceFinder:
             cv2.imwrite(os.path.join(partial_results_path, "1.7 - Merged Mask.png"), sources_mask_u8)
 
         # Calculate fluxes
+        # Calculate fluxes / ranking scores
         logit("Filtering sources.")
         fluxes = {}
+
+        # If mask came from matched-filtering, rank by MF peak inside each contour footprint.
+        # Otherwise keep legacy behavior: integrated intensity inside contour on masked_clean_image.
+        use_mf_rank = (self.cfg.mask_method == "matched_filter")
+        mf_rank_img = mf_response if use_mf_rank else None  # mf_response must be same shape as cleaned_img/residual_img
+
         for label, contour in enumerate(contours):
-            if cv2.contourArea(contour) < min_size or cv2.contourArea(contour) > max_size:
+            area = cv2.contourArea(contour)
+            if area < min_size or area > max_size:
                 fluxes[label] = -1
                 continue
+
             # Calculate enclosing Rectangle
             x, y, w, h = cv2.boundingRect(contour)
-            x1, y1, x2, y2 = (x, y, x + w, y + h)
-            roi = masked_clean_image[y1:y2, x1:x2]
+
             shifted_contour = contour - [x, y]
-            # Extract a masked ROI from the cleaned image containing each segement
+
+            # Build exact contour footprint mask for the ROI
             mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.drawContours(mask, [shifted_contour], -1, (255), thickness=cv2.FILLED)
-            filtered_roi = cv2.bitwise_and(roi, roi, mask=mask)
-            fluxes[label] = int(np.sum(filtered_roi.astype(np.int64)))
+            cv2.drawContours(mask, [shifted_contour], -1, 255, thickness=cv2.FILLED)
+
+            if mf_rank_img is not None:
+                # Rank by peak matched-filter response inside contour
+                roi_resp = mf_rank_img[y:y + h, x:x + w]
+                vals = roi_resp[mask > 0]
+                fluxes[label] = float(vals.max()) if vals.size else -1.0
+            else:
+                # Legacy: rank by summed intensity inside contour (background-subtracted masked image)
+                roi = masked_clean_image[y:y + h, x:x + w]
+                filtered_roi = cv2.bitwise_and(roi, roi, mask=mask)
+                fluxes[label] = int(np.sum(filtered_roi.astype(np.int64)))
+
         logit("sorting fluxes.")
+
         # Sort sources based on flux
         fluxes_sorted = list(sorted(fluxes.items(), key=lambda item: item[1], reverse=True))
 
