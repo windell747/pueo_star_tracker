@@ -342,6 +342,15 @@ class Config(Dynamic):
     hyst_sigma_floor = 1e-6
     hyst_sigma_gauss = 0.0
     simple_threshold_k = 8.0  # not "hyst_*" but used with this block
+    # --- Matched-filter mask selection ---
+    # choose: "hysteresis" | "matched_filter"
+    mask_method = "hysteresis"
+
+    # Matched-filter parameters (used when mask_method == "matched_filter")
+    mf_fwhm_px = 5.0
+    mf_k = 6.0
+    mf_kernel_size = 0
+    mf_zero_mean = True
 
     # --- TRAIL_DETECTION ---
     ellipse_min_area_px = 10
@@ -810,6 +819,14 @@ class Config(Dynamic):
         self.hyst_sigma_floor = self._config.getfloat('THRESHOLDING', 'hyst_sigma_floor', fallback=self.hyst_sigma_floor)
         self.hyst_sigma_gauss = self._config.getfloat('THRESHOLDING', 'hyst_sigma_gauss', fallback=self.hyst_sigma_gauss)
         self.simple_threshold_k = self._config.getfloat('THRESHOLDING', 'simple_threshold_k', fallback=self.simple_threshold_k)
+        # Matched-filter / mask method
+        self.mask_method = self._config.get('THRESHOLDING', 'mask_method', fallback=self.mask_method)
+
+        self.mf_fwhm_px = self._config.getfloat('THRESHOLDING', 'mf_fwhm_px', fallback=self.mf_fwhm_px)
+        self.mf_k = self._config.getfloat('THRESHOLDING', 'mf_k', fallback=self.mf_k)
+        self.mf_kernel_size = self._config.getint('THRESHOLDING', 'mf_kernel_size', fallback=self.mf_kernel_size)
+        self.mf_zero_mean = self._config.getboolean('THRESHOLDING', 'mf_zero_mean', fallback=self.mf_zero_mean)
+
 
         # TRAIL_DETECTION
         self.ellipse_min_area_px = self._config.getint('TRAIL_DETECTION', 'ellipse_min_area_px', fallback=self.ellipse_min_area_px)

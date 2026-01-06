@@ -171,7 +171,42 @@ class SourceFinder:
         K /= (s if s > 0 else 1.0)
 
         return K
+        
+    @staticmethod
+    def _make_gaussian_psf_kernel(*, fwhm_px: float, size: int = 0, zero_mean: bool = True) -> np.ndarray:
+        """
+        Build an odd-sized Gaussian PSF kernel (float32).
+        If zero_mean=True, subtract the kernel mean (helps suppress DC/background leakage).
+        """
+        fwhm_px = float(fwhm_px)
+        if fwhm_px <= 0:
+            raise ValueError(f"fwhm_px must be > 0, got {fwhm_px}")
 
+        sigma = fwhm_px / 2.354820045  # FWHM -> sigma
+
+        if size and int(size) > 0:
+            S = int(size)
+        else:
+            # ~ +/-3 sigma support
+            S = int(np.ceil(6.0 * sigma))
+            if S < 3:
+                S = 3
+            if (S % 2) == 0:
+                S += 1
+
+        ax = np.arange(S, dtype=np.float32) - (S // 2)
+        xx, yy = np.meshgrid(ax, ax)
+        K = np.exp(-(xx * xx + yy * yy) / (2.0 * sigma * sigma)).astype(np.float32)
+
+        # normalize to sum=1 first
+        s = float(K.sum())
+        if s > 0:
+            K /= s
+
+        if zero_mean:
+            K -= float(K.mean())
+
+        return K
 
     def ring_mean_background_estimation(
             self,
@@ -439,17 +474,62 @@ class SourceFinder:
             logit("Writing leveled_image.")
             cv2.imwrite(os.path.join(partial_results_path, "residual_img.png"), residual_img)
 
-        sources_mask, sources_mask_u8 = self.threshold_with_noise(
-            residual_img,
-            sigma_map=estimated_noise,
-            k_high=float(self.cfg.hyst_k_high),
-            k_low=float(self.cfg.hyst_k_low),
-            use_hysteresis=True,
-            min_area=int(self.cfg.hyst_min_area),
-            close_kernel=int(self.cfg.hyst_close_kernel),
-            sigma_gauss=float(self.cfg.hyst_sigma_gauss),
-            sigma_floor=float(self.cfg.hyst_sigma_floor),
-        )
+ 
+        mask_method = self.cfg.mask_method
+        logit(f"mask_method: {mask_method}")
+
+        if mask_method == "matched_filter":
+            # Matched filter must run on the BACKGROUND-SUBTRACTED image in float (preserve negatives)
+            residual_mf = (
+                img.astype(np.float32, copy=False)
+                - initial_local_levels.astype(np.float32, copy=False)
+                - final_local_levels.astype(np.float32, copy=False)
+            )
+
+            mf_fwhm_px = self.cfg.mf_fwhm_px
+            mf_k = self.cfg.mf_k
+            mf_kernel_size = self.cfg.mf_kernel_size
+            mf_zero_mean = self.cfg.mf_zero_mean
+
+            psf = self._make_gaussian_psf_kernel(
+                fwhm_px=mf_fwhm_px,
+                size=mf_kernel_size,
+                zero_mean=mf_zero_mean,
+            )
+
+            resp = cv2.filter2D(residual_mf, ddepth=-1, kernel=psf, borderType=cv2.BORDER_REFLECT)
+
+            # Convert response to an SNR-ish map so mf_k is in "sigma units"
+            psf_energy = float(np.sum(psf * psf))
+            snr_mf = resp / (estimated_noise.astype(np.float32, copy=False) * np.sqrt(psf_energy) + 1e-12)
+
+            # Build mask from SNR map using a single threshold (simple start)
+            ones = np.ones_like(snr_mf, dtype=np.float32)
+            sources_mask, sources_mask_u8 = self.threshold_with_noise(
+                snr_mf,
+                sigma_map=ones,          # threshold_with_noise expects residual > k*sigma_map
+                k_high=mf_k,
+                use_hysteresis=False,    # simple thresholding for now
+                min_area=int(self.cfg.hyst_min_area),
+                close_kernel=int(self.cfg.hyst_close_kernel),
+                sigma_gauss=0.0,
+                sigma_floor=1e-6,
+            )
+
+        else:
+            # Default: existing hysteresis thresholding on residual_img
+            sources_mask, sources_mask_u8 = self.threshold_with_noise(
+                residual_img,
+                sigma_map=estimated_noise,
+                k_high=float(self.cfg.hyst_k_high),
+                k_low=float(self.cfg.hyst_k_low),
+                use_hysteresis=True,
+                min_area=int(self.cfg.hyst_min_area),
+                close_kernel=int(self.cfg.hyst_close_kernel),
+                sigma_gauss=float(self.cfg.hyst_sigma_gauss),
+                sigma_floor=float(self.cfg.hyst_sigma_floor),
+            )
+
         
         before_roi_clamp = int(np.count_nonzero(sources_mask_u8))
         
