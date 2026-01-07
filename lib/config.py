@@ -138,7 +138,7 @@ class Config(Dynamic):
     #flag to use background levels for exposure control.
     autoexposure_use_bkg_p999 = True
     #want this to be >5x the cell size for background.
-    autoexposure_bkg_sigma_px = 100.0
+    autoexposure_bkg_sigma_px = 100
     #bkg_ percentile
     autoexposure_bkg_percentile = 99.5
     
@@ -341,8 +341,6 @@ class Config(Dynamic):
     hyst_sigma_floor = 1e-6
     hyst_sigma_gauss = 0.0
     simple_threshold_k = 8.0  # not "hyst_*" but used with this block
-    # Mask method: hysteresis|matched_filter
-    mask_method = hysteresis
 
     # Mask method: hysteresis|matched_filter
     mask_method = "hysteresis"
@@ -655,6 +653,9 @@ class Config(Dynamic):
         self.delta_aperture = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_aperture', fallback=self.delta_aperture)
         self.delta_exposure_time = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_exposure_time', fallback=self.delta_exposure_time)
         self.delta_gain = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_gain', fallback=self.delta_gain)
+        
+        self.autofocus_apply_vignette = self._config.getboolean('LENS_FOCUS_CONSTANTS', 'autofocus_apply_vignette', fallback=self.autofocus_apply_vignette)
+
 
         # [CAMERA] section
         self.asi_gama = self._config.getint('CAMERA', 'asi_gama', fallback=self.asi_gama)
@@ -822,7 +823,7 @@ class Config(Dynamic):
         self.merge_min_area = self._config.getint('MERGE_MASK', 'merge_min_area', fallback=self.merge_min_area)
         self.merge_gap_along = self._config.getint('MERGE_MASK', 'merge_gap_along', fallback=self.merge_gap_along)
         self.merge_gap_cross = self._config.getint('MERGE_MASK', 'merge_gap_cross', fallback=self.merge_gap_cross)
-        self.merge_ang_tol_deg = self._config.getint('MERGE_MASK', 'merge_ang_tol_deg', fallback=self.merge_ang_tol_deg)
+        self.merge_ang_tol_deg = self._config.getfloat('MERGE_MASK', 'merge_ang_tol_deg', fallback=self.merge_ang_tol_deg)
 
         # STILL_FILTERS
         self.still_compactness_min = self._config.getfloat('STILL_FILTERS', 'still_compactness_min', fallback=self.still_compactness_min)
@@ -866,7 +867,7 @@ class Config(Dynamic):
         self.ellipse_min_area_px = self._config.getint('TRAIL_DETECTION', 'ellipse_min_area_px', fallback=self.ellipse_min_area_px)
         self.ellipse_aspect_ratio_min = self._config.getfloat('TRAIL_DETECTION', 'ellipse_aspect_ratio_min', fallback=self.ellipse_aspect_ratio_min)
         self.ellipse_major_min_px = self._config.getint('TRAIL_DETECTION', 'ellipse_major_min_px', fallback=self.ellipse_major_min_px)
-        self.min_elongated_count  = self._config.getint('TRAIL_DETECTION', 'min_elongated_count ', fallback=self.min_elongated_count )
+        self.min_elongated_count  = self._config.getint('TRAIL_DETECTION', 'min_elongated_count', fallback=self.min_elongated_count )
         self.min_median_major_px = self._config.getint('TRAIL_DETECTION', 'min_median_major_px', fallback=self.min_median_major_px)
         self.min_orientation_coherence = self._config.getfloat('TRAIL_DETECTION', 'min_orientation_coherence', fallback=self.min_orientation_coherence)
         self.min_elongated_fraction  = self._config.getfloat('TRAIL_DETECTION', 'min_elongated_fraction', fallback=self.min_elongated_fraction )

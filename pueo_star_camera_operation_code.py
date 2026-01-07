@@ -454,6 +454,121 @@ class PueoStarCameraOperation:
             d = d[k:-k]
 
         return float(np.mean(d))
+        
+        import numpy as np
+import cv2
+
+def _center_roi_bounds(self, h: int, w: int, frac_x: float, frac_y: float):
+    frac_x = float(np.clip(frac_x, 0.05, 1.0))
+    frac_y = float(np.clip(frac_y, 0.05, 1.0))
+    x0 = int(round((1.0 - frac_x) * 0.5 * w))
+    x1 = int(round(w - x0))
+    y0 = int(round((1.0 - frac_y) * 0.5 * h))
+    y1 = int(round(h - y0))
+    return x0, x1, y0, y1
+
+def _estimate_vignette_corr_map_radial(self, img_u16: np.ndarray) -> np.ndarray:
+    """
+    Build a per-pixel multiplicative correction map so that:
+        img_corr = img_u16 * corr_map
+    using a robust radial median profile measured on a center ROI.
+
+    Uses cfg:
+      - roi_frac_x / roi_frac_y
+      - vignette_profile_bins
+      - vignette_mask_hi_percentile
+      - vignette_smooth_sigma_px
+    """
+    if img_u16.ndim != 2:
+        raise ValueError("Expected 2D grayscale image for vignette correction")
+
+    h, w = img_u16.shape
+    roi_fx = float(getattr(self.cfg, "roi_frac_x", 0.75))
+    roi_fy = float(getattr(self.cfg, "roi_frac_y", 0.75))
+    bins = int(getattr(self.cfg, "vignette_profile_bins", 200))
+    bins = max(32, bins)
+
+    hi_pct = float(getattr(self.cfg, "vignette_mask_hi_percentile", 99.95))
+    hi_pct = float(np.clip(hi_pct, 90.0, 99.999))
+
+    smooth_sigma_px = float(getattr(self.cfg, "vignette_smooth_sigma_px", 100.0))
+    smooth_sigma_px = max(0.0, smooth_sigma_px)
+
+    x0, x1, y0, y1 = self._center_roi_bounds(h, w, roi_fx, roi_fy)
+    roi = img_u16[y0:y1, x0:x1].astype(np.float32)
+
+    # Mask out bright stuff (stars/hot pixels) inside ROI
+    thr = np.percentile(roi, hi_pct)
+    keep = roi <= thr
+    if np.count_nonzero(keep) < 0.1 * roi.size:
+        # Too aggressive masking => fall back to "no correction"
+        return np.ones((h, w), dtype=np.float32)
+
+    yy, xx = np.indices(roi.shape, dtype=np.float32)
+    cy = 0.5 * (roi.shape[0] - 1)
+    cx = 0.5 * (roi.shape[1] - 1)
+    rr = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+
+    rvals = rr[keep].ravel()
+    ivals = roi[keep].ravel()
+
+    r_max = float(np.max(rvals))
+    if r_max <= 1.0:
+        return np.ones((h, w), dtype=np.float32)
+
+    edges = np.linspace(0.0, r_max, bins + 1).astype(np.float32)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    # Bin medians
+    bin_idx = np.clip(np.digitize(rvals, edges) - 1, 0, bins - 1)
+    prof = np.full(bins, np.nan, dtype=np.float32)
+    for b in range(bins):
+        sel = ivals[bin_idx == b]
+        if sel.size > 20:
+            prof[b] = np.median(sel)
+
+    # Fill gaps by interpolation
+    good = np.isfinite(prof)
+    if np.count_nonzero(good) < max(8, bins // 10):
+        return np.ones((h, w), dtype=np.float32)
+
+    prof = np.interp(np.arange(bins), np.flatnonzero(good), prof[good]).astype(np.float32)
+
+    # Smooth profile: convert "pixel sigma" to "bin sigma"
+    dr = r_max / max(1, (bins - 1))
+    sigma_bins = smooth_sigma_px / max(dr, 1e-6)
+    if sigma_bins > 0.0:
+        prof = cv2.GaussianBlur(prof.reshape(1, -1), (0, 0), sigmaX=float(sigma_bins)).ravel().astype(np.float32)
+
+    # Build full-image radius map (about full-image center)
+    yyf, xxf = np.indices((h, w), dtype=np.float32)
+    cyf = 0.5 * (h - 1)
+    cxf = 0.5 * (w - 1)
+    r_full = np.sqrt((xxf - cxf) ** 2 + (yyf - cyf) ** 2)
+
+    # Map radii to vignette intensity via 1D profile; clamp beyond ROI radius
+    v_map = np.interp(np.minimum(r_full, r_max), centers, prof).astype(np.float32)
+
+    # Reference intensity near center (robust): median of inner 5% of bins
+    n0 = max(1, int(0.05 * bins))
+    ref = float(np.median(prof[:n0]))
+    eps = 1e-6
+    corr = ref / np.maximum(v_map, eps)
+
+    # Clamp correction to avoid crazy amplification if v_map gets weird
+    corr = np.clip(corr, 0.25, 4.0).astype(np.float32)
+    return corr
+
+def _apply_corr_map_u16(self, img_u16: np.ndarray, corr_map: np.ndarray) -> np.ndarray:
+    if img_u16.shape != corr_map.shape:
+        raise ValueError("corr_map shape must match image shape")
+    out = img_u16.astype(np.float32) * corr_map
+    if np.issubdtype(img_u16.dtype, np.integer):
+        mx = np.iinfo(img_u16.dtype).max
+        out = np.clip(out, 0, mx)
+        return out.astype(img_u16.dtype)
+    return out
+
 
     def plt_savefig(self, plt, image_file, is_preserve=True):
         """Saves an image and sends it to the messenger."""
@@ -1763,7 +1878,8 @@ class PueoStarCameraOperation:
         if self.focuser.aperture_position == 'closed':
             self.logit('Opening Aperture.')
             self.focuser.open_aperture()
-
+            
+        af_corr_map = None
         # Getting the images at different focus positions
         for i in range(len(focus_positions)):
             self.logit("#########################################################################################")
@@ -1773,6 +1889,15 @@ class PueoStarCameraOperation:
             self.logit('Taking image')
             log_file_path = "log/test_log.txt"
             img, basename = self.capture_timestamp_save(focus_image_path, inserted_string)
+            
+            # --- Optional vignette correction for autofocus only ---
+            use_af_vignette = self.cfg.autofocus_apply_vignette
+            if use_af_vignette:
+                if af_corr_map is None:
+                    af_corr_map = self._estimate_vignette_corr_map_radial(img)
+                img_for_focus = self._apply_corr_map_u16(img, af_corr_map)
+            else:
+                img_for_focus = img
 
             d = int(self.cfg.local_sigma_cell_size)
             if d < 3:
@@ -1782,13 +1907,13 @@ class PueoStarCameraOperation:
             downscale_factor = self.cfg.leveling_filter_downscale_factor
             if downscale_factor > 1:
                 downsampled_img = cv2.resize(
-                    img,
-                    (img.shape[1] // downscale_factor, img.shape[0] // downscale_factor),
+                    img_for_focus,
+                    (img_for_focus.shape[1] // downscale_factor, img_for_focus.shape[0] // downscale_factor),
                     interpolation=cv2.INTER_AREA
                 )
                 d_small = max(3, d // downscale_factor)  # shrink kernel accordingly
             else:
-                downsampled_img = img
+                downsampled_img = img_for_focus
                 d_small = d
 
             initial_local_levels = self.sf.ring_mean_background_estimation(downsampled_img, d_small)
@@ -1798,12 +1923,12 @@ class PueoStarCameraOperation:
             if downscale_factor > 1:
                 initial_local_levels = cv2.resize(
                     initial_local_levels,
-                    (img.shape[1], img.shape[0]),
+                    (img_for_focus.shape[1], img_for_focus.shape[0]),
                     interpolation=cv2.INTER_LINEAR
                 )
 
             # Subtract background the first time
-            cleaned_img = self.sf.subtract_background(img, initial_local_levels)
+            cleaned_img = self.sf.subtract_background(img_for_focus, initial_local_levels)
 
             # --- Second leveling pass on cleaned image ---
             downscale_factor = self.cfg.leveling_filter_downscale_factor
@@ -1877,6 +2002,26 @@ class PueoStarCameraOperation:
 
                 # Use median for autofocus score (more robust)
                 diameter_score = median_d
+                
+                # Optional: replace mask-diameter with PSF-fit FWHM for the V-fit metric
+                use_psf_fwhm = self.cfg.autofocus_use_psf_fwhm
+                if use_psf_fwhm:
+                    max_stars = self.cfg.autofocus_psf_max_stars
+                    stamp_r = self.cfg.autofocus_psf_stamp_radius
+
+                    fwhm_list = self.get_psf_fwhm_list_from_mask(
+                        roi_residual,
+                        roi_mask_u8,
+                        max_stars=max_stars,
+                        stamp_radius=stamp_r
+                    )
+
+                    if fwhm_list.size > 0:
+                        fwhm_med = float(np.median(fwhm_list))
+                        diameter_score = fwhm_med
+                        self.logit(f"Median PSF FWHM (used for V-fit): {fwhm_med:.3f} px (n={fwhm_list.size})")
+                    else:
+                        self.logit("No valid PSF fits; keeping existing diameter_score (or penalty if set).")
 
                 self.logit(f'Mean star diameter: {mean_d:.3f} px')
                 self.logit(f'Median star diameter (used for V-fit): {median_d:.3f} px')
@@ -1962,6 +2107,7 @@ class PueoStarCameraOperation:
         # Take final image at lab best focus (not the fitted position)
         inserted_string = 'f' + str(int(round(final_focus_pos)))
         self.capture_timestamp_save(focus_image_path, inserted_string)
+
 
         # --- Write autofocus summary (best-effort; never break autofocus) ---
         try:
