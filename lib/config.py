@@ -213,7 +213,6 @@ class Config(Dynamic):
     vignette_enable = True
     vignette_smooth_sigma_px = 100
     vignette_profile_bins = 200
-    vignette_poly_deg = 5
     vignette_mask_hi_percentile = 99.95
     vignette_refit_every_n = 0
 
@@ -725,7 +724,6 @@ class Config(Dynamic):
         self.vignette_enable = self._config.getboolean('SOURCES', 'vignette_enable', fallback=self.vignette_enable)
         self.vignette_smooth_sigma_px = self._config.getfloat('SOURCES', 'vignette_smooth_sigma_px', fallback=self.vignette_smooth_sigma_px)
         self.vignette_profile_bins = self._config.getint('SOURCES', 'vignette_profile_bins', fallback=self.vignette_profile_bins)
-        self.vignette_poly_deg = self._config.getint('SOURCES', 'vignette_poly_deg', fallback=self.vignette_poly_deg)
         self.vignette_mask_hi_percentile = self._config.getfloat('SOURCES', 'vignette_mask_hi_percentile', fallback=self.vignette_mask_hi_percentile)
         self.vignette_refit_every_n = self._config.getint('SOURCES', 'vignette_refit_every_n', fallback=self.vignette_refit_every_n)
 
