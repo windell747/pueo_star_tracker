@@ -207,6 +207,61 @@ class SourceFinder:
             K -= float(K.mean())
 
         return K
+        
+    def _auto_fit_mf_fwhm(
+        self,
+        residual_fit: np.ndarray,
+        noise_fit: np.ndarray,
+        *,
+        fwhm_min: float,
+        fwhm_max: float,
+        fwhm_step: float,
+        kernel_size: int,
+        zero_mean: bool,
+        roi_frac_x: float,
+        roi_frac_y: float,
+        score_percentile: float,
+    ):
+        """
+        Choose best Gaussian PSF FWHM by scanning a range and maximizing a high-percentile
+        of the matched-filter SNR map in a centered ROI.
+        Returns (best_fwhm, best_score).
+        """
+        fwhm_min = float(fwhm_min)
+        fwhm_max = float(fwhm_max)
+        fwhm_step = float(fwhm_step)
+        if fwhm_step <= 0:
+            raise ValueError("mf_fwhm_step must be > 0")
+        if fwhm_max < fwhm_min:
+            fwhm_min, fwhm_max = fwhm_max, fwhm_min
+
+        # ensure float32
+        R = residual_fit.astype(np.float32, copy=False)
+        N = noise_fit.astype(np.float32, copy=False)
+
+        best_fwhm = fwhm_min
+        best_score = -1e30
+
+        # scan using integer steps to avoid float drift
+        n_steps = int(round((fwhm_max - fwhm_min) / fwhm_step)) + 1
+        for i in range(n_steps):
+            fwhm = fwhm_min + i * fwhm_step
+
+            psf = self._make_gaussian_psf_kernel(fwhm_px=fwhm, size=kernel_size, zero_mean=zero_mean)
+            resp = cv2.filter2D(R, ddepth=-1, kernel=psf, borderType=cv2.BORDER_REFLECT)
+
+            psf_energy = float(np.sum(psf * psf))
+            snr = resp / (N * np.sqrt(psf_energy) + 1e-12)
+
+            snr_roi, _ = self.center_roi_view(snr, frac_x=roi_frac_x, frac_y=roi_frac_y)
+            score = float(np.percentile(snr_roi, score_percentile))
+
+            if score > best_score:
+                best_score = score
+                best_fwhm = fwhm
+
+        return best_fwhm, best_score
+
 
     def ring_mean_background_estimation(
             self,
@@ -486,18 +541,58 @@ class SourceFinder:
                 - final_local_levels.astype(np.float32, copy=False)
             )
 
-            mf_fwhm_px = self.cfg.mf_fwhm_px
+            # Ensure mf_response is always defined for downstream ranking
+            mf_response = None
+
             mf_k = self.cfg.mf_k
             mf_kernel_size = self.cfg.mf_kernel_size
             mf_zero_mean = self.cfg.mf_zero_mean
 
+            # --- Optional: auto-fit PSF width by scanning FWHM range ---
+            mf_auto_fit = self.cfg.mf_auto_fit
+            if mf_auto_fit:
+                fmin = self.cfg.mf_fwhm_min
+                fmax = self.cfg.mf_fwhm_max
+                fstep = self.cfg.mf_fwhm_step
+                ds = self.cfg.mf_fit_downscale
+                rx = self.cfg.mf_fit_roi_frac_x
+                ry = self.cfg.mf_fit_roi_frac_y
+                sp = self.cfg.mf_fit_score_percentile
+
+                # downscale for speed (optional)
+                residual_fit = residual_mf
+                noise_fit = estimated_noise.astype(np.float32, copy=False)
+                if ds and ds > 1:
+                    H, W = residual_fit.shape[:2]
+                    residual_fit = cv2.resize(residual_fit, (W // ds, H // ds), interpolation=cv2.INTER_AREA)
+                    noise_fit = cv2.resize(noise_fit, (W // ds, H // ds), interpolation=cv2.INTER_AREA)
+
+                best_fwhm, best_score = self._auto_fit_mf_fwhm(
+                    residual_fit,
+                    noise_fit,
+                    fwhm_min=fmin,
+                    fwhm_max=fmax,
+                    fwhm_step=fstep,
+                    kernel_size=int(mf_kernel_size),
+                    zero_mean=bool(mf_zero_mean),
+                    roi_frac_x=rx,
+                    roi_frac_y=ry,
+                    score_percentile=sp,
+                )
+                mf_fwhm_px = best_fwhm
+                logit(f"MF auto-fit: best_fwhm_px={mf_fwhm_px:.3f}  score(p{sp})={best_score:.3f}")
+            else:
+                mf_fwhm_px = self.cfg.mf_fwhm_px
+
+            # Build PSF using chosen FWHM
             psf = self._make_gaussian_psf_kernel(
                 fwhm_px=mf_fwhm_px,
-                size=mf_kernel_size,
-                zero_mean=mf_zero_mean,
+                size=int(mf_kernel_size),
+                zero_mean=bool(mf_zero_mean),
             )
 
             resp = cv2.filter2D(residual_mf, ddepth=-1, kernel=psf, borderType=cv2.BORDER_REFLECT)
+            mf_response = resp
 
             # Convert response to an SNR-ish map so mf_k is in "sigma units"
             psf_energy = float(np.sum(psf * psf))

@@ -341,15 +341,24 @@ class Config(Dynamic):
     hyst_sigma_floor = 1e-6
     hyst_sigma_gauss = 0.0
     simple_threshold_k = 8.0  # not "hyst_*" but used with this block
-    # --- Matched-filter mask selection ---
-    # choose: "hysteresis" | "matched_filter"
-    mask_method = "hysteresis"
+    # Mask method: hysteresis|matched_filter
+    mask_method = hysteresis
 
-    # Matched-filter parameters (used when mask_method == "matched_filter")
+    # Matched filter settings (used when mask_method = matched_filter)
     mf_fwhm_px = 5.0
     mf_k = 6.0
     mf_kernel_size = 0
-    mf_zero_mean = True
+    mf_zero_mean = true
+
+    # Optional per-frame MF auto-fit (choose best FWHM within bounds)
+    mf_auto_fit = false
+    mf_fwhm_min = 2.0
+    mf_fwhm_max = 7.0
+    mf_fwhm_step = 0.5
+    mf_fit_downscale = 4
+    mf_fit_roi_frac_x = 0.80
+    mf_fit_roi_frac_y = 0.80
+    mf_fit_score_percentile = 99.99
 
     # --- TRAIL_DETECTION ---
     ellipse_min_area_px = 10
@@ -817,14 +826,23 @@ class Config(Dynamic):
         self.hyst_sigma_floor = self._config.getfloat('THRESHOLDING', 'hyst_sigma_floor', fallback=self.hyst_sigma_floor)
         self.hyst_sigma_gauss = self._config.getfloat('THRESHOLDING', 'hyst_sigma_gauss', fallback=self.hyst_sigma_gauss)
         self.simple_threshold_k = self._config.getfloat('THRESHOLDING', 'simple_threshold_k', fallback=self.simple_threshold_k)
-        # Matched-filter / mask method
+ 
+        
+        # THRESHOLDING (mask_method + matched-filter params)
         self.mask_method = self._config.get('THRESHOLDING', 'mask_method', fallback=self.mask_method)
-
         self.mf_fwhm_px = self._config.getfloat('THRESHOLDING', 'mf_fwhm_px', fallback=self.mf_fwhm_px)
         self.mf_k = self._config.getfloat('THRESHOLDING', 'mf_k', fallback=self.mf_k)
         self.mf_kernel_size = self._config.getint('THRESHOLDING', 'mf_kernel_size', fallback=self.mf_kernel_size)
         self.mf_zero_mean = self._config.getboolean('THRESHOLDING', 'mf_zero_mean', fallback=self.mf_zero_mean)
 
+        self.mf_auto_fit = self._config.getboolean('THRESHOLDING', 'mf_auto_fit', fallback=self.mf_auto_fit)
+        self.mf_fwhm_min = self._config.getfloat('THRESHOLDING', 'mf_fwhm_min', fallback=self.mf_fwhm_min)
+        self.mf_fwhm_max = self._config.getfloat('THRESHOLDING', 'mf_fwhm_max', fallback=self.mf_fwhm_max)
+        self.mf_fwhm_step = self._config.getfloat('THRESHOLDING', 'mf_fwhm_step', fallback=self.mf_fwhm_step)
+        self.mf_fit_downscale = self._config.getint('THRESHOLDING', 'mf_fit_downscale', fallback=self.mf_fit_downscale)
+        self.mf_fit_roi_frac_x = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_x', fallback=self.mf_fit_roi_frac_x)
+        self.mf_fit_roi_frac_y = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_y', fallback=self.mf_fit_roi_frac_y)
+        self.mf_fit_score_percentile = self._config.getfloat('THRESHOLDING', 'mf_fit_score_percentile', fallback=self.mf_fit_score_percentile)
 
         # TRAIL_DETECTION
         self.ellipse_min_area_px = self._config.getint('TRAIL_DETECTION', 'ellipse_min_area_px', fallback=self.ellipse_min_area_px)
