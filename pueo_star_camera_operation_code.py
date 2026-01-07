@@ -1628,6 +1628,104 @@ class PueoStarCameraOperation:
         self.logit(np.array2string(diameters, threshold=40, edgeitems=10, precision=3))
 
         return diameters
+        
+    def _fit_2d_gaussian_fwhm(self, img_f32: np.ndarray, x: int, y: int, stamp_radius: int):
+        """
+        Fit an axis-aligned 2D Gaussian + offset to a small stamp around (x,y).
+        Returns FWHM (px) using geometric mean of (FWHM_x, FWHM_y), or None on failure.
+        """
+        h, w = img_f32.shape
+        r = int(stamp_radius)
+
+        x1 = max(0, x - r); x2 = min(w, x + r + 1)
+        y1 = max(0, y - r); y2 = min(h, y + r + 1)
+        stamp = img_f32[y1:y2, x1:x2].astype(np.float32)
+
+        if stamp.shape[0] < 7 or stamp.shape[1] < 7:
+            return None
+
+        yy, xx = np.mgrid[0:stamp.shape[0], 0:stamp.shape[1]]
+
+        def g2d(coords, amp, x0, y0, sx, sy, offset):
+            xg, yg = coords
+            return (offset + amp * np.exp(-(((xg - x0) ** 2) / (2 * sx ** 2) + ((yg - y0) ** 2) / (2 * sy ** 2)))).ravel()
+
+        med = float(np.median(stamp))
+        py, px = np.unravel_index(np.argmax(stamp), stamp.shape)
+        amp0 = float(stamp[py, px] - med)
+        if not np.isfinite(amp0) or amp0 <= 0:
+            return None
+
+        # Initial guess
+        p0 = (amp0, float(px), float(py), 2.0, 2.0, med)
+
+        # Bounds (keep sigmas reasonable; avoid hot-pixel "sigma -> 0" fits)
+        sigma_min = 0.8  # -> FWHM ~= 1.88 px minimum
+        lower = (0.0, 0.0, 0.0, sigma_min, sigma_min, -np.inf)
+        upper = (np.inf, stamp.shape[1] - 1, stamp.shape[0] - 1, 15.0, 15.0, np.inf)
+
+        try:
+            popt, _ = curve_fit(g2d, (xx, yy), stamp.ravel(), p0=p0, bounds=(lower, upper), maxfev=20000)
+            _, _, _, sx, sy, _ = popt
+            fwhm_x = 2.354820045 * float(sx)
+            fwhm_y = 2.354820045 * float(sy)
+            fwhm = float(np.sqrt(max(fwhm_x, 1e-9) * max(fwhm_y, 1e-9)))
+            return fwhm
+        except Exception:
+            return None
+
+    def get_psf_fwhm_list_from_mask(self, residual_img, mask_u8, max_stars: int = 20, stamp_radius: int = 14):
+        """
+        Autofocus helper:
+          - takes ROI residual + ROI binary mask (0/255)
+          - finds blobs in the mask
+          - ranks blobs by peak residual value
+          - fits a 2D Gaussian PSF to each blob peak
+          - returns an array of per-star FWHM (px)
+        """
+        if residual_img is None or mask_u8 is None:
+            return np.array([], dtype=np.float32)
+
+        res = residual_img.astype(np.float32)
+
+        m = mask_u8
+        if m.max() <= 1:
+            m = (m > 0).astype(np.uint8) * 255
+
+        contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return np.array([], dtype=np.float32)
+
+        # Reuse your existing size gates
+        min_size = int(self.cfg.img_min_size)
+        max_size = int(self.cfg.img_max_size) * 3
+
+        candidates = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_size or area > max_size:
+                continue
+
+            x, y, ww, hh = cv2.boundingRect(cnt)
+            patch = res[y:y + hh, x:x + ww]
+            if patch.size == 0:
+                continue
+
+            iy, ix = np.unravel_index(np.argmax(patch), patch.shape)
+            peak_x = int(x + ix)
+            peak_y = int(y + iy)
+            peak_val = float(patch[iy, ix])
+            candidates.append((peak_val, peak_x, peak_y))
+
+        candidates.sort(key=lambda t: t[0], reverse=True)
+
+        fwhms = []
+        for peak_val, px, py in candidates[:max_stars]:
+            fwhm = self._fit_2d_gaussian_fwhm(res, px, py, stamp_radius=stamp_radius)
+            if fwhm is not None and np.isfinite(fwhm):
+                fwhms.append(float(fwhm))
+
+        return np.asarray(fwhms, dtype=np.float32)
 
     def do_autofocus_routine(self, focus_image_path, focus_start_pos, focus_stop_pos, focus_step_count,
                              max_focus_position, focus_method='sequence_contrast'):

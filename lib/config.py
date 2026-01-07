@@ -344,21 +344,34 @@ class Config(Dynamic):
     # Mask method: hysteresis|matched_filter
     mask_method = hysteresis
 
-    # Matched filter settings (used when mask_method = matched_filter)
-    mf_fwhm_px = 5.0
-    mf_k = 6.0
-    mf_kernel_size = 0
-    mf_zero_mean = true
+    # Mask method: hysteresis|matched_filter
+    mask_method = "hysteresis"
 
-    # Optional per-frame MF auto-fit (choose best FWHM within bounds)
-    mf_auto_fit = false
-    mf_fwhm_min = 2.0
-    mf_fwhm_max = 7.0
-    mf_fwhm_step = 0.5
-    mf_fit_downscale = 4
-    mf_fit_roi_frac_x = 0.80
-    mf_fit_roi_frac_y = 0.80
-    mf_fit_score_percentile = 99.99
+    # ================================
+    # Matched filter parameters
+    # ================================
+    mf_fwhm_px = 3.25          # Typical star PSF FWHM (px)
+    mf_k = 6.0                 # Detection threshold in sigma units
+    mf_kernel_size = 0         # 0 = AUTO
+    mf_zero_mean = True        # Subtract kernel mean to reject background
+
+    # --- Matched filter auto-fit ---
+    mf_auto_fit = True         # Automatically estimate best FWHM
+    mf_fwhm_min = 1.0          # Smallest PSF FWHM (px) to test
+    mf_fwhm_max = 7.0          # Largest PSF FWHM (px) to test
+    mf_fwhm_step = 0.25        # Step size (px) for scanning
+    mf_fit_downscale = 1       # Downscale factor used only for auto-fit speed
+    mf_fit_roi_frac_x = 0.85   # Fraction of width used for auto-fit scoring
+    mf_fit_roi_frac_y = 0.85   # Fraction of height used for auto-fit scoring
+    mf_fit_score_percentile = 99.9  # Response percentile used to score fit
+
+    # ================================
+    # Autofocus PSF-fit parameters
+    # ================================
+    autofocus_use_psf_fwhm = False  # If True, use PSF-FWHM as autofocus metric
+    autofocus_psf_max_stars = 20    # Number of stars to fit per frame
+    autofocus_psf_stamp_radius = 14 # Half-size (px) of stamp for Gaussian fit
+
 
     # --- TRAIL_DETECTION ---
     ellipse_min_area_px = 10
@@ -590,7 +603,7 @@ class Config(Dynamic):
         try:
             self.exposure_time_s = float(self.exposure_time) / 1e6
         except Exception:
-            self.exposure_time_s = 0.0
+            self.exposure_time_s = 1e-4
 
         self.pixel_bias = self._config.getint('LENS_FOCUS_CONSTANTS', 'pixel_bias', fallback=self.pixel_bias)
 
@@ -828,13 +841,12 @@ class Config(Dynamic):
         self.simple_threshold_k = self._config.getfloat('THRESHOLDING', 'simple_threshold_k', fallback=self.simple_threshold_k)
  
         
-        # THRESHOLDING (mask_method + matched-filter params)
+                # --- Matched Filter ---
         self.mask_method = self._config.get('THRESHOLDING', 'mask_method', fallback=self.mask_method)
         self.mf_fwhm_px = self._config.getfloat('THRESHOLDING', 'mf_fwhm_px', fallback=self.mf_fwhm_px)
         self.mf_k = self._config.getfloat('THRESHOLDING', 'mf_k', fallback=self.mf_k)
         self.mf_kernel_size = self._config.getint('THRESHOLDING', 'mf_kernel_size', fallback=self.mf_kernel_size)
         self.mf_zero_mean = self._config.getboolean('THRESHOLDING', 'mf_zero_mean', fallback=self.mf_zero_mean)
-
         self.mf_auto_fit = self._config.getboolean('THRESHOLDING', 'mf_auto_fit', fallback=self.mf_auto_fit)
         self.mf_fwhm_min = self._config.getfloat('THRESHOLDING', 'mf_fwhm_min', fallback=self.mf_fwhm_min)
         self.mf_fwhm_max = self._config.getfloat('THRESHOLDING', 'mf_fwhm_max', fallback=self.mf_fwhm_max)
@@ -843,6 +855,12 @@ class Config(Dynamic):
         self.mf_fit_roi_frac_x = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_x', fallback=self.mf_fit_roi_frac_x)
         self.mf_fit_roi_frac_y = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_y', fallback=self.mf_fit_roi_frac_y)
         self.mf_fit_score_percentile = self._config.getfloat('THRESHOLDING', 'mf_fit_score_percentile', fallback=self.mf_fit_score_percentile)
+
+        # --- Autofocus PSF-fit ---
+        self.autofocus_use_psf_fwhm = self._config.getboolean('THRESHOLDING', 'autofocus_use_psf_fwhm', fallback=self.autofocus_use_psf_fwhm)
+        self.autofocus_psf_max_stars = self._config.getint('THRESHOLDING', 'autofocus_psf_max_stars', fallback=self.autofocus_psf_max_stars)
+        self.autofocus_psf_stamp_radius = self._config.getint('THRESHOLDING', 'autofocus_psf_stamp_radius', fallback=self.autofocus_psf_stamp_radius)
+
 
         # TRAIL_DETECTION
         self.ellipse_min_area_px = self._config.getint('TRAIL_DETECTION', 'ellipse_min_area_px', fallback=self.ellipse_min_area_px)
@@ -998,5 +1016,5 @@ if __name__ == "__main__":
     log()
 
     print(f'Updated')
-    cfg.set_dynamic(solver='solver1', run_autonomous=True, lab_best_focus=8355)
+    cfg.set_dynamic(solver='solver1', run_autonomous=True, lab_best_focus=8352)
     log()
