@@ -114,7 +114,15 @@ class Astrometry:
         bins         = int(self.cfg.vignette_profile_bins)
         hip          = float(self.cfg.vignette_mask_hi_percentile)
         refit_every  = int(self.cfg.vignette_refit_every_n)   # 0 => only refit when shape changes
-        ...
+        # --- cache-driven refit decision ---
+        cache_shape = self._vignette_cache.get("shape", None)
+        cache_corr  = self._vignette_cache.get("corr", None)
+        frame_ctr   = int(self._vignette_cache.get("frame_counter", 0))
+
+        need_refit = (cache_corr is None) or (cache_shape != shape_key)
+        if (not need_refit) and (refit_every > 0) and (frame_ctr >= refit_every):
+            need_refit = True
+
         if need_refit:
             corr, meta = self._vignette_fit_lut_from_roi(
                 img,
@@ -130,7 +138,7 @@ class Astrometry:
 
             with suppress(Exception):
                 cx, cy = meta["center_xy"]
-                self.logit(
+                logit(
                     f"Vignette fit (LUT): center=(x={cx}, y={cy}), "
                     f"center_est={meta['center_est']:.2f}, "
                     f"r_fit_max={meta['rnorm_fit_max']:.3f}, "
@@ -147,7 +155,8 @@ class Astrometry:
         info = np.iinfo(img.dtype)
         out_f = np.clip(out_f, info.min, info.max)
         out_img = out_f.astype(img.dtype, copy=False)
-
+        
+        self._vignette_cache["frame_counter"] = int(self._vignette_cache.get("frame_counter", 0)) + 1
         return out_img, meta
 
     @staticmethod
