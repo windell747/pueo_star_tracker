@@ -464,7 +464,7 @@ class Cedar:
             cprint(f'Solution summary: {self.solver_name}', color='green')
             for idx, sol in solutions.items():
                 cprint(
-                    f'  Cedar detect sigma [{idx}]: {sol['sigma']:3.1f} star_candidates: {sol['star_candidates']} prefiltred: {precomputed_star_centroids.shape[0]} solution: RA: {sol['RA']} Dec: {sol['Dec']}',
+                    f"  Cedar detect sigma [{idx}]: {sol['sigma']:3.1f} star_candidates: {sol['star_candidates']} prefiltred: {precomputed_star_centroids.shape[0]} solution: RA: {sol['RA']} Dec: {sol['Dec']}",
                     color='green')
             cprint(f'  Solution with min_idx: {min_idx}', color='blue')
             # Use the solution with minimal star_candidates

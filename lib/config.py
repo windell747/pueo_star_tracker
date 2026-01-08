@@ -34,6 +34,7 @@ class Config(Dynamic):
     autofocus_stop_position = 6000
     autofocus_step_count = 10
     autofocus_method = 'sequence_contrast'
+    autofocus_apply_vignette = True
 
     ###### COURSE focus finding parameters#######
     top_end_span_percentage = 0.60
@@ -814,7 +815,7 @@ class Config(Dynamic):
         self.an_nsigma = self._config.getfloat('ASTROMETRY.NET', 'nsigma', fallback=self.an_nsigma)
         self.an_crpix_center = self._config.getboolean('ASTROMETRY.NET', 'an_crpix_center', fallback=self.an_crpix_center)
 
-        self.an_corr = self._config.getboolean('ASTROMETRY.NET', 'corr', fallback=self.an_depth)
+        self.an_corr = self._config.getint('ASTROMETRY.NET', 'corr', fallback=self.an_corr)
         self.an_new_fits = self._config.getboolean('ASTROMETRY.NET', 'new_fits', fallback=self.an_new_fits)
         self.an_match = self._config.getboolean('ASTROMETRY.NET', 'match', fallback=self.an_match)
         self.an_solved = self._config.getboolean('ASTROMETRY.NET', 'solved', fallback=self.an_solved)
