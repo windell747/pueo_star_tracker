@@ -1,0 +1,97 @@
+# Build / temporary directories
+.idea/
+.venv/
+autogain/
+build/
+backup/
+web/
+cleanup.cmd
+inspection_images/
+migrate-to-new-repo.cmd
+
+# Logs (keep only scripts you want)
+log/
+logs/
+!logs/autonomous_test.sh
+!logs/cleanup.sh
+!logs/cleanup_data.sh
+!logs/folder_monitor.sh
+!logs/status.sh
+!logs/telemetry_monitor.sh
+
+# Dynamic Config files
+conf/dynamic.ini
+conf/config_unique.ini
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*.pyd
+lib/__pycache__
+
+# Old or temporary code
+lib/astrometry_results/
+lib/cedar_detect/test_data/
+lib/cedar_detect_old/
+lib/cedar_solve_old/
+lib/cedar_temp/
+lib/data/
+lib/tyc_main.dat
+lib/hip_main.dat
+lib/cedar_detect/environment_info.txt
+
+# Data files (ignore all npz except specific ones)
+data/*.npz
+!data/fov_10.79_mag9.0_tyc_v11_cedar_database.npz
+!data/fov_10.79_mag9.0_tyc_v12_cedar_database.npz
+
+# Docs (ignore all except key files and images folder)
+docs/*
+docs/images/photo_2025-06-07_08-48-19.jpg
+!docs/install.md
+!docs/pueo_api.md
+!docs/pueo_icd_sw.md
+!docs/pueo_integration_guide.md
+!docs/images/
+
+# Misc / project scripts not tracked
+merge/
+output/
+partial_results
+sd_card_path/
+ssd_path/
+setup/astrometry.net/
+setenv.cmd
+sync_pcc.sh
+project_files.lst
+sync_test.cmd
+switch-repo.cmd
+
+# Temp / test folders and scripts
+temp/
+test/
+test_astrometry.py
+test_camera.py
+test_compute_angular_velocity.py
+test_focuser.py
+test_trace_graph.py
+
+# Test images and backups
+test_images/*.zip
+test_images/*.cmd
+test_images/smeared_5_7_16bit_4144x2822_streaked.png
+test_images/backup/
+test_images/backup-large/
+test_images/copy_test_img.cmd
+test_images/input/
+test_images/simulated_streak_image/
+test_images/still_images/
+test_images/streaked_images/
+test_images/test_focus_images/
+test_images/tmp_folder/
+test_images/test_images.7z
+test_images_dev/
+tools/
+
+# Utils
+utils/
