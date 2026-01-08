@@ -34,6 +34,7 @@ class Config(Dynamic):
     autofocus_stop_position = 6000
     autofocus_step_count = 10
     autofocus_method = 'sequence_contrast'
+    autofocus_apply_vignette = True
 
     ###### COURSE focus finding parameters#######
     top_end_span_percentage = 0.60
@@ -138,7 +139,7 @@ class Config(Dynamic):
     #flag to use background levels for exposure control.
     autoexposure_use_bkg_p999 = True
     #want this to be >5x the cell size for background.
-    autoexposure_bkg_sigma_px = 100.0
+    autoexposure_bkg_sigma_px = 100
     #bkg_ percentile
     autoexposure_bkg_percentile = 99.5
     
@@ -213,7 +214,6 @@ class Config(Dynamic):
     vignette_enable = True
     vignette_smooth_sigma_px = 100
     vignette_profile_bins = 200
-    vignette_poly_deg = 5
     vignette_mask_hi_percentile = 99.95
     vignette_refit_every_n = 0
 
@@ -342,6 +342,35 @@ class Config(Dynamic):
     hyst_sigma_floor = 1e-6
     hyst_sigma_gauss = 0.0
     simple_threshold_k = 8.0  # not "hyst_*" but used with this block
+
+    # Mask method: hysteresis|matched_filter
+    mask_method = "hysteresis"
+
+    # ================================
+    # Matched filter parameters
+    # ================================
+    mf_fwhm_px = 3.25          # Typical star PSF FWHM (px)
+    mf_k = 6.0                 # Detection threshold in sigma units
+    mf_kernel_size = 0         # 0 = AUTO
+    mf_zero_mean = True        # Subtract kernel mean to reject background
+
+    # --- Matched filter auto-fit ---
+    mf_auto_fit = True         # Automatically estimate best FWHM
+    mf_fwhm_min = 1.0          # Smallest PSF FWHM (px) to test
+    mf_fwhm_max = 7.0          # Largest PSF FWHM (px) to test
+    mf_fwhm_step = 0.25        # Step size (px) for scanning
+    mf_fit_downscale = 1       # Downscale factor used only for auto-fit speed
+    mf_fit_roi_frac_x = 0.85   # Fraction of width used for auto-fit scoring
+    mf_fit_roi_frac_y = 0.85   # Fraction of height used for auto-fit scoring
+    mf_fit_score_percentile = 99.9  # Response percentile used to score fit
+
+    # ================================
+    # Autofocus PSF-fit parameters
+    # ================================
+    autofocus_use_psf_fwhm = False  # If True, use PSF-FWHM as autofocus metric
+    autofocus_psf_max_stars = 20    # Number of stars to fit per frame
+    autofocus_psf_stamp_radius = 14 # Half-size (px) of stamp for Gaussian fit
+
 
     # --- TRAIL_DETECTION ---
     ellipse_min_area_px = 10
@@ -573,7 +602,7 @@ class Config(Dynamic):
         try:
             self.exposure_time_s = float(self.exposure_time) / 1e6
         except Exception:
-            self.exposure_time_s = 0.0
+            self.exposure_time_s = 1e-4
 
         self.pixel_bias = self._config.getint('LENS_FOCUS_CONSTANTS', 'pixel_bias', fallback=self.pixel_bias)
 
@@ -625,6 +654,9 @@ class Config(Dynamic):
         self.delta_aperture = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_aperture', fallback=self.delta_aperture)
         self.delta_exposure_time = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_exposure_time', fallback=self.delta_exposure_time)
         self.delta_gain = self._config.getint('LENS_FOCUS_CONSTANTS', 'delta_gain', fallback=self.delta_gain)
+        
+        self.autofocus_apply_vignette = self._config.getboolean('LENS_FOCUS_CONSTANTS', 'autofocus_apply_vignette', fallback=self.autofocus_apply_vignette)
+
 
         # [CAMERA] section
         self.asi_gama = self._config.getint('CAMERA', 'asi_gama', fallback=self.asi_gama)
@@ -716,7 +748,6 @@ class Config(Dynamic):
         self.vignette_enable = self._config.getboolean('SOURCES', 'vignette_enable', fallback=self.vignette_enable)
         self.vignette_smooth_sigma_px = self._config.getfloat('SOURCES', 'vignette_smooth_sigma_px', fallback=self.vignette_smooth_sigma_px)
         self.vignette_profile_bins = self._config.getint('SOURCES', 'vignette_profile_bins', fallback=self.vignette_profile_bins)
-        self.vignette_poly_deg = self._config.getint('SOURCES', 'vignette_poly_deg', fallback=self.vignette_poly_deg)
         self.vignette_mask_hi_percentile = self._config.getfloat('SOURCES', 'vignette_mask_hi_percentile', fallback=self.vignette_mask_hi_percentile)
         self.vignette_refit_every_n = self._config.getint('SOURCES', 'vignette_refit_every_n', fallback=self.vignette_refit_every_n)
 
@@ -784,7 +815,7 @@ class Config(Dynamic):
         self.an_nsigma = self._config.getfloat('ASTROMETRY.NET', 'nsigma', fallback=self.an_nsigma)
         self.an_crpix_center = self._config.getboolean('ASTROMETRY.NET', 'an_crpix_center', fallback=self.an_crpix_center)
 
-        self.an_corr = self._config.getboolean('ASTROMETRY.NET', 'corr', fallback=self.an_depth)
+        self.an_corr = self._config.getint('ASTROMETRY.NET', 'corr', fallback=self.an_corr)
         self.an_new_fits = self._config.getboolean('ASTROMETRY.NET', 'new_fits', fallback=self.an_new_fits)
         self.an_match = self._config.getboolean('ASTROMETRY.NET', 'match', fallback=self.an_match)
         self.an_solved = self._config.getboolean('ASTROMETRY.NET', 'solved', fallback=self.an_solved)
@@ -793,7 +824,7 @@ class Config(Dynamic):
         self.merge_min_area = self._config.getint('MERGE_MASK', 'merge_min_area', fallback=self.merge_min_area)
         self.merge_gap_along = self._config.getint('MERGE_MASK', 'merge_gap_along', fallback=self.merge_gap_along)
         self.merge_gap_cross = self._config.getint('MERGE_MASK', 'merge_gap_cross', fallback=self.merge_gap_cross)
-        self.merge_ang_tol_deg = self._config.getint('MERGE_MASK', 'merge_ang_tol_deg', fallback=self.merge_ang_tol_deg)
+        self.merge_ang_tol_deg = self._config.getfloat('MERGE_MASK', 'merge_ang_tol_deg', fallback=self.merge_ang_tol_deg)
 
         # STILL_FILTERS
         self.still_compactness_min = self._config.getfloat('STILL_FILTERS', 'still_compactness_min', fallback=self.still_compactness_min)
@@ -810,12 +841,34 @@ class Config(Dynamic):
         self.hyst_sigma_floor = self._config.getfloat('THRESHOLDING', 'hyst_sigma_floor', fallback=self.hyst_sigma_floor)
         self.hyst_sigma_gauss = self._config.getfloat('THRESHOLDING', 'hyst_sigma_gauss', fallback=self.hyst_sigma_gauss)
         self.simple_threshold_k = self._config.getfloat('THRESHOLDING', 'simple_threshold_k', fallback=self.simple_threshold_k)
+ 
+        
+                # --- Matched Filter ---
+        self.mask_method = self._config.get('THRESHOLDING', 'mask_method', fallback=self.mask_method)
+        self.mf_fwhm_px = self._config.getfloat('THRESHOLDING', 'mf_fwhm_px', fallback=self.mf_fwhm_px)
+        self.mf_k = self._config.getfloat('THRESHOLDING', 'mf_k', fallback=self.mf_k)
+        self.mf_kernel_size = self._config.getint('THRESHOLDING', 'mf_kernel_size', fallback=self.mf_kernel_size)
+        self.mf_zero_mean = self._config.getboolean('THRESHOLDING', 'mf_zero_mean', fallback=self.mf_zero_mean)
+        self.mf_auto_fit = self._config.getboolean('THRESHOLDING', 'mf_auto_fit', fallback=self.mf_auto_fit)
+        self.mf_fwhm_min = self._config.getfloat('THRESHOLDING', 'mf_fwhm_min', fallback=self.mf_fwhm_min)
+        self.mf_fwhm_max = self._config.getfloat('THRESHOLDING', 'mf_fwhm_max', fallback=self.mf_fwhm_max)
+        self.mf_fwhm_step = self._config.getfloat('THRESHOLDING', 'mf_fwhm_step', fallback=self.mf_fwhm_step)
+        self.mf_fit_downscale = self._config.getint('THRESHOLDING', 'mf_fit_downscale', fallback=self.mf_fit_downscale)
+        self.mf_fit_roi_frac_x = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_x', fallback=self.mf_fit_roi_frac_x)
+        self.mf_fit_roi_frac_y = self._config.getfloat('THRESHOLDING', 'mf_fit_roi_frac_y', fallback=self.mf_fit_roi_frac_y)
+        self.mf_fit_score_percentile = self._config.getfloat('THRESHOLDING', 'mf_fit_score_percentile', fallback=self.mf_fit_score_percentile)
+
+        # --- Autofocus PSF-fit ---
+        self.autofocus_use_psf_fwhm = self._config.getboolean('THRESHOLDING', 'autofocus_use_psf_fwhm', fallback=self.autofocus_use_psf_fwhm)
+        self.autofocus_psf_max_stars = self._config.getint('THRESHOLDING', 'autofocus_psf_max_stars', fallback=self.autofocus_psf_max_stars)
+        self.autofocus_psf_stamp_radius = self._config.getint('THRESHOLDING', 'autofocus_psf_stamp_radius', fallback=self.autofocus_psf_stamp_radius)
+
 
         # TRAIL_DETECTION
         self.ellipse_min_area_px = self._config.getint('TRAIL_DETECTION', 'ellipse_min_area_px', fallback=self.ellipse_min_area_px)
         self.ellipse_aspect_ratio_min = self._config.getfloat('TRAIL_DETECTION', 'ellipse_aspect_ratio_min', fallback=self.ellipse_aspect_ratio_min)
         self.ellipse_major_min_px = self._config.getint('TRAIL_DETECTION', 'ellipse_major_min_px', fallback=self.ellipse_major_min_px)
-        self.min_elongated_count  = self._config.getint('TRAIL_DETECTION', 'min_elongated_count ', fallback=self.min_elongated_count )
+        self.min_elongated_count  = self._config.getint('TRAIL_DETECTION', 'min_elongated_count', fallback=self.min_elongated_count )
         self.min_median_major_px = self._config.getint('TRAIL_DETECTION', 'min_median_major_px', fallback=self.min_median_major_px)
         self.min_orientation_coherence = self._config.getfloat('TRAIL_DETECTION', 'min_orientation_coherence', fallback=self.min_orientation_coherence)
         self.min_elongated_fraction  = self._config.getfloat('TRAIL_DETECTION', 'min_elongated_fraction', fallback=self.min_elongated_fraction )
@@ -965,5 +1018,5 @@ if __name__ == "__main__":
     log()
 
     print(f'Updated')
-    cfg.set_dynamic(solver='solver1', run_autonomous=True, lab_best_focus=8355)
+    cfg.set_dynamic(solver='solver1', run_autonomous=True, lab_best_focus=8352)
     log()

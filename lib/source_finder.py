@@ -171,6 +171,96 @@ class SourceFinder:
         K /= (s if s > 0 else 1.0)
 
         return K
+        
+    @staticmethod
+    def _make_gaussian_psf_kernel(*, fwhm_px: float, size: int = 0, zero_mean: bool = True) -> np.ndarray:
+        """
+        Build an odd-sized Gaussian PSF kernel (float32).
+        If zero_mean=True, subtract the kernel mean (helps suppress DC/background leakage).
+        """
+        fwhm_px = float(fwhm_px)
+        if fwhm_px <= 0:
+            raise ValueError(f"fwhm_px must be > 0, got {fwhm_px}")
+
+        sigma = fwhm_px / 2.354820045  # FWHM -> sigma
+
+        if size and int(size) > 0:
+            S = int(size)
+        else:
+            # ~ +/-3 sigma support
+            S = int(np.ceil(6.0 * sigma))
+            if S < 3:
+                S = 3
+            if (S % 2) == 0:
+                S += 1
+
+        ax = np.arange(S, dtype=np.float32) - (S // 2)
+        xx, yy = np.meshgrid(ax, ax)
+        K = np.exp(-(xx * xx + yy * yy) / (2.0 * sigma * sigma)).astype(np.float32)
+
+        # normalize to sum=1 first
+        s = float(K.sum())
+        if s > 0:
+            K /= s
+
+        if zero_mean:
+            K -= float(K.mean())
+
+        return K
+        
+    def _auto_fit_mf_fwhm(
+        self,
+        residual_fit: np.ndarray,
+        noise_fit: np.ndarray,
+        *,
+        fwhm_min: float,
+        fwhm_max: float,
+        fwhm_step: float,
+        kernel_size: int,
+        zero_mean: bool,
+        roi_frac_x: float,
+        roi_frac_y: float,
+        score_percentile: float,
+    ):
+        """
+        Choose best Gaussian PSF FWHM by scanning a range and maximizing a high-percentile
+        of the matched-filter SNR map in a centered ROI.
+        Returns (best_fwhm, best_score).
+        """
+        fwhm_min = float(fwhm_min)
+        fwhm_max = float(fwhm_max)
+        fwhm_step = float(fwhm_step)
+        if fwhm_step <= 0:
+            raise ValueError("mf_fwhm_step must be > 0")
+        if fwhm_max < fwhm_min:
+            fwhm_min, fwhm_max = fwhm_max, fwhm_min
+
+        # ensure float32
+        R = residual_fit.astype(np.float32, copy=False)
+        N = noise_fit.astype(np.float32, copy=False)
+
+        best_fwhm = fwhm_min
+        best_score = -1e30
+
+        # scan using integer steps to avoid float drift
+        n_steps = int(round((fwhm_max - fwhm_min) / fwhm_step)) + 1
+        for i in range(n_steps):
+            fwhm = fwhm_min + i * fwhm_step
+
+            psf = self._make_gaussian_psf_kernel(fwhm_px=fwhm, size=kernel_size, zero_mean=zero_mean)
+            resp = cv2.filter2D(R, ddepth=-1, kernel=psf, borderType=cv2.BORDER_REFLECT)
+
+            psf_energy = float(np.sum(psf * psf))
+            snr = resp / (N * np.sqrt(psf_energy) + 1e-12)
+
+            snr_roi, _ = self.center_roi_view(snr, frac_x=roi_frac_x, frac_y=roi_frac_y)
+            score = float(np.percentile(snr_roi, score_percentile))
+
+            if score > best_score:
+                best_score = score
+                best_fwhm = fwhm
+
+        return best_fwhm, best_score
 
 
     def ring_mean_background_estimation(
@@ -439,17 +529,102 @@ class SourceFinder:
             logit("Writing leveled_image.")
             cv2.imwrite(os.path.join(partial_results_path, "residual_img.png"), residual_img)
 
-        sources_mask, sources_mask_u8 = self.threshold_with_noise(
-            residual_img,
-            sigma_map=estimated_noise,
-            k_high=float(self.cfg.hyst_k_high),
-            k_low=float(self.cfg.hyst_k_low),
-            use_hysteresis=True,
-            min_area=int(self.cfg.hyst_min_area),
-            close_kernel=int(self.cfg.hyst_close_kernel),
-            sigma_gauss=float(self.cfg.hyst_sigma_gauss),
-            sigma_floor=float(self.cfg.hyst_sigma_floor),
-        )
+ 
+        mask_method = self.cfg.mask_method
+        logit(f"mask_method: {mask_method}")
+
+        if mask_method == "matched_filter":
+            # Matched filter must run on the BACKGROUND-SUBTRACTED image in float (preserve negatives)
+            residual_mf = (
+                img.astype(np.float32, copy=False)
+                - initial_local_levels.astype(np.float32, copy=False)
+                - final_local_levels.astype(np.float32, copy=False)
+            )
+
+            # Ensure mf_response is always defined for downstream ranking
+            mf_response = None
+
+            mf_k = self.cfg.mf_k
+            mf_kernel_size = self.cfg.mf_kernel_size
+            mf_zero_mean = self.cfg.mf_zero_mean
+
+            # --- Optional: auto-fit PSF width by scanning FWHM range ---
+            mf_auto_fit = self.cfg.mf_auto_fit
+            if mf_auto_fit:
+                fmin = self.cfg.mf_fwhm_min
+                fmax = self.cfg.mf_fwhm_max
+                fstep = self.cfg.mf_fwhm_step
+                ds = self.cfg.mf_fit_downscale
+                rx = self.cfg.mf_fit_roi_frac_x
+                ry = self.cfg.mf_fit_roi_frac_y
+                sp = self.cfg.mf_fit_score_percentile
+
+                # downscale for speed (optional)
+                residual_fit = residual_mf
+                noise_fit = estimated_noise.astype(np.float32, copy=False)
+                if ds and ds > 1:
+                    H, W = residual_fit.shape[:2]
+                    residual_fit = cv2.resize(residual_fit, (W // ds, H // ds), interpolation=cv2.INTER_AREA)
+                    noise_fit = cv2.resize(noise_fit, (W // ds, H // ds), interpolation=cv2.INTER_AREA)
+
+                best_fwhm, best_score = self._auto_fit_mf_fwhm(
+                    residual_fit,
+                    noise_fit,
+                    fwhm_min=fmin,
+                    fwhm_max=fmax,
+                    fwhm_step=fstep,
+                    kernel_size=int(mf_kernel_size),
+                    zero_mean=bool(mf_zero_mean),
+                    roi_frac_x=rx,
+                    roi_frac_y=ry,
+                    score_percentile=sp,
+                )
+                mf_fwhm_px = best_fwhm
+                logit(f"MF auto-fit: best_fwhm_px={mf_fwhm_px:.3f}  score(p{sp})={best_score:.3f}")
+            else:
+                mf_fwhm_px = self.cfg.mf_fwhm_px
+
+            # Build PSF using chosen FWHM
+            psf = self._make_gaussian_psf_kernel(
+                fwhm_px=mf_fwhm_px,
+                size=int(mf_kernel_size),
+                zero_mean=bool(mf_zero_mean),
+            )
+
+            resp = cv2.filter2D(residual_mf, ddepth=-1, kernel=psf, borderType=cv2.BORDER_REFLECT)
+            mf_response = resp
+
+            # Convert response to an SNR-ish map so mf_k is in "sigma units"
+            psf_energy = float(np.sum(psf * psf))
+            snr_mf = resp / (estimated_noise.astype(np.float32, copy=False) * np.sqrt(psf_energy) + 1e-12)
+
+            # Build mask from SNR map using a single threshold (simple start)
+            ones = np.ones_like(snr_mf, dtype=np.float32)
+            sources_mask, sources_mask_u8 = self.threshold_with_noise(
+                snr_mf,
+                sigma_map=ones,          # threshold_with_noise expects residual > k*sigma_map
+                k_high=mf_k,
+                use_hysteresis=False,    # simple thresholding for now
+                min_area=int(self.cfg.hyst_min_area),
+                close_kernel=int(self.cfg.hyst_close_kernel),
+                sigma_gauss=0.0,
+                sigma_floor=1e-6,
+            )
+
+        else:
+            # Default: existing hysteresis thresholding on residual_img
+            sources_mask, sources_mask_u8 = self.threshold_with_noise(
+                residual_img,
+                sigma_map=estimated_noise,
+                k_high=float(self.cfg.hyst_k_high),
+                k_low=float(self.cfg.hyst_k_low),
+                use_hysteresis=True,
+                min_area=int(self.cfg.hyst_min_area),
+                close_kernel=int(self.cfg.hyst_close_kernel),
+                sigma_gauss=float(self.cfg.hyst_sigma_gauss),
+                sigma_floor=float(self.cfg.hyst_sigma_floor),
+            )
+
         
         before_roi_clamp = int(np.count_nonzero(sources_mask_u8))
         
@@ -594,23 +769,43 @@ class SourceFinder:
             cv2.imwrite(os.path.join(partial_results_path, "1.7 - Merged Mask.png"), sources_mask_u8)
 
         # Calculate fluxes
+        # Calculate fluxes / ranking scores
         logit("Filtering sources.")
         fluxes = {}
+
+        # If mask came from matched-filtering, rank by MF peak inside each contour footprint.
+        # Otherwise keep legacy behavior: integrated intensity inside contour on masked_clean_image.
+        use_mf_rank = (self.cfg.mask_method == "matched_filter")
+        mf_rank_img = mf_response if use_mf_rank else None  # mf_response must be same shape as cleaned_img/residual_img
+
         for label, contour in enumerate(contours):
-            if cv2.contourArea(contour) < min_size or cv2.contourArea(contour) > max_size:
+            area = cv2.contourArea(contour)
+            if area < min_size or area > max_size:
                 fluxes[label] = -1
                 continue
+
             # Calculate enclosing Rectangle
             x, y, w, h = cv2.boundingRect(contour)
-            x1, y1, x2, y2 = (x, y, x + w, y + h)
-            roi = masked_clean_image[y1:y2, x1:x2]
+
             shifted_contour = contour - [x, y]
-            # Extract a masked ROI from the cleaned image containing each segement
+
+            # Build exact contour footprint mask for the ROI
             mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.drawContours(mask, [shifted_contour], -1, (255), thickness=cv2.FILLED)
-            filtered_roi = cv2.bitwise_and(roi, roi, mask=mask)
-            fluxes[label] = int(np.sum(filtered_roi.astype(np.int64)))
+            cv2.drawContours(mask, [shifted_contour], -1, 255, thickness=cv2.FILLED)
+
+            if mf_rank_img is not None:
+                # Rank by peak matched-filter response inside contour
+                roi_resp = mf_rank_img[y:y + h, x:x + w]
+                vals = roi_resp[mask > 0]
+                fluxes[label] = float(vals.max()) if vals.size else -1.0
+            else:
+                # Legacy: rank by summed intensity inside contour (background-subtracted masked image)
+                roi = masked_clean_image[y:y + h, x:x + w]
+                filtered_roi = cv2.bitwise_and(roi, roi, mask=mask)
+                fluxes[label] = int(np.sum(filtered_roi.astype(np.int64)))
+
         logit("sorting fluxes.")
+
         # Sort sources based on flux
         fluxes_sorted = list(sorted(fluxes.items(), key=lambda item: item[1], reverse=True))
 

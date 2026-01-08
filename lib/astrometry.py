@@ -112,29 +112,23 @@ class Astrometry:
 
         smooth_sigma = float(self.cfg.vignette_smooth_sigma_px)
         bins         = int(self.cfg.vignette_profile_bins)
-        deg          = int(self.cfg.vignette_poly_deg)
         hip          = float(self.cfg.vignette_mask_hi_percentile)
         refit_every  = int(self.cfg.vignette_refit_every_n)   # 0 => only refit when shape changes
+        # --- cache-driven refit decision ---
+        cache_shape = self._vignette_cache.get("shape", None)
+        cache_corr  = self._vignette_cache.get("corr", None)
+        frame_ctr   = int(self._vignette_cache.get("frame_counter", 0))
 
-        need_refit = (
-            ("corr" not in self._vignette_cache) or
-            (self._vignette_cache.get("shape") != shape_key)
-        )
-
-        # Optional periodic refit
-        if (not need_refit) and (refit_every > 0):
-            k = int(self._vignette_cache.get("frame_counter", 0)) + 1
-            self._vignette_cache["frame_counter"] = k
-            if (k % refit_every) == 0:
-                need_refit = True
+        need_refit = (cache_corr is None) or (cache_shape != shape_key)
+        if (not need_refit) and (refit_every > 0) and (frame_ctr >= refit_every):
+            need_refit = True
 
         if need_refit:
-            corr, meta = self._vignette_fit_poly_from_roi(
+            corr, meta = self._vignette_fit_lut_from_roi(
                 img,
                 roi_fx, roi_fy,
                 smooth_sigma_px=smooth_sigma,
                 profile_bins=bins,
-                poly_deg=deg,
                 hi_percentile=hip,
             )
             self._vignette_cache["corr"] = corr
@@ -144,13 +138,14 @@ class Astrometry:
 
             with suppress(Exception):
                 cx, cy = meta["center_xy"]
-                self.logit(
-                    f"Vignette fit: center=(x={cx}, y={cy}), "
+                logit(
+                    f"Vignette fit (LUT): center=(x={cx}, y={cy}), "
                     f"center_est={meta['center_est']:.2f}, "
                     f"r_fit_max={meta['rnorm_fit_max']:.3f}, "
-                    f"poly_deg={deg}"
+                    f"bins={meta['profile_bins']}, "
+                    f"ok_bins={meta['ok_bins']}"
                 )
-                self.logit(f"Vignette poly coefs: {meta['poly_coefs']}")
+
 
         corr = self._vignette_cache["corr"]
         meta = self._vignette_cache.get("meta", None)
@@ -160,24 +155,26 @@ class Astrometry:
         info = np.iinfo(img.dtype)
         out_f = np.clip(out_f, info.min, info.max)
         out_img = out_f.astype(img.dtype, copy=False)
-
+        
+        self._vignette_cache["frame_counter"] = int(self._vignette_cache.get("frame_counter", 0)) + 1
         return out_img, meta
 
     @staticmethod
-    def _vignette_fit_poly_from_roi(
+    def _vignette_fit_lut_from_roi(
         img: np.ndarray,
         roi_frac_x: float,
         roi_frac_y: float,
         *,
         smooth_sigma_px: float = 100.0,
         profile_bins: int = 200,
-        poly_deg: int = 5,
         hi_percentile: float = 99.99,
         border_px: int = 5,
         min_illum: float = 1.0,
+        min_bin_count: int = 50,
     ):
         """
-        Fit a radial vignetting model on a CENTER ROI, then build a FULL-FRAME correction map.
+        Build a 1D radial LUT (illumination vs normalized radius) from a CENTER ROI,
+        then expand it into a FULL-FRAME correction map.
 
         Returns:
             corr_map (float32): multiply image by this
@@ -215,13 +212,11 @@ class Astrometry:
             rx = float(np.sum(xx_m * wts) / np.sum(wts))
             ry = float(np.sum(yy_m * wts) / np.sum(wts))
         else:
-            # fallback: geometric center of ROI (or full image)
             rx = (blur.shape[1] - 1) * 0.5
             ry = (blur.shape[0] - 1) * 0.5
 
         cx = int(round(x0 + rx))
         cy = int(round(y0 + ry))
-
 
         # --- rmax from farthest corner ---
         corners = np.array([[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]], dtype=np.float32)
@@ -246,57 +241,93 @@ class Astrometry:
             mask[:, -bp:] = True
 
         if np.any(~mask):
-            thr = float(np.percentile(roi[~mask], float(hi_percentile)))
-            mask |= (roi > thr)
+            thr_hi = float(np.percentile(roi[~mask], float(hi_percentile)))
+            mask |= (roi >= thr_hi)
 
-        # --- radial median profile ---
-        nb = int(max(50, profile_bins))
-        bins = np.linspace(0.0, rnorm_fit_max, nb + 1, dtype=np.float32)
-        rm = 0.5 * (bins[:-1] + bins[1:])
-        prof = np.full(nb, np.nan, dtype=np.float64)
-
-        for i in range(nb):
-            sel = (rnorm_roi >= bins[i]) & (rnorm_roi < bins[i + 1]) & (~mask)
-            if int(np.count_nonzero(sel)) > 50:
-                prof[i] = float(np.median(blur[sel]))
-
-        ok = np.isfinite(prof)
-        if int(np.count_nonzero(ok)) < max(12, poly_deg + 2):
+        valid = ~mask
+        n_valid = int(np.count_nonzero(valid))
+        if n_valid < 500:
+            # not enough pixels to estimate anything sane
             corr = np.ones((h, w), dtype=np.float32)
             meta = {
+                "method": "lut",
                 "center_xy": (cx, cy),
-                "center_est": float(np.nan),
-                "poly_deg": int(poly_deg),
-                "poly_coefs": [],
+                "center_est": float(np.median(roi)) if roi.size else 1.0,
                 "rnorm_fit_max": rnorm_fit_max,
-                "note": "Too few valid radial bins; returned unity correction.",
+                "profile_bins": int(profile_bins),
+                "ok_bins": 0,
+                "note": "fallback_not_enough_valid_pixels",
             }
             return corr, meta
 
-        # Fit in r^2 space (vignetting is often close to polynomial in r^2)
-        x = (rm[ok] ** 2).astype(np.float64)
-        y = prof[ok].astype(np.float64)
-        coefs = np.polyfit(x, y, int(poly_deg))
-        p = np.poly1d(coefs)
-        center_est = float(p(0.0))
+        # --- build 1D radial profile using fast binned MEAN ---
+        nb = int(max(32, profile_bins))
+        # map rnorm in [0, rnorm_fit_max] -> bin index [0, nb-1]
+        idx = np.floor((rnorm_roi[valid] / max(rnorm_fit_max, 1e-9)) * (nb - 1)).astype(np.int32)
+        idx = np.clip(idx, 0, nb - 1)
 
-        # --- build full-frame correction map ---
+        vals = roi[valid].astype(np.float32, copy=False)
+        sums = np.bincount(idx, weights=vals, minlength=nb).astype(np.float64)
+        cnts = np.bincount(idx, minlength=nb).astype(np.int64)
+
+        prof = (sums / np.maximum(cnts, 1)).astype(np.float32)
+        prof[cnts < int(min_bin_count)] = np.nan
+
+        ok = np.isfinite(prof)
+        ok_bins = int(np.count_nonzero(ok))
+        if ok_bins < 5:
+            corr = np.ones((h, w), dtype=np.float32)
+            meta = {
+                "method": "lut",
+                "center_xy": (cx, cy),
+                "center_est": float(np.nanmean(vals)),
+                "rnorm_fit_max": rnorm_fit_max,
+                "profile_bins": nb,
+                "ok_bins": ok_bins,
+                "note": "fallback_not_enough_ok_bins",
+            }
+            return corr, meta
+
+        x = np.arange(nb, dtype=np.float32)
+        prof_filled = np.interp(x, x[ok], prof[ok]).astype(np.float32)
+
+        # optional 1D smoothing in bin-space (kept small, cheap, and stable)
+        sigma_bins = max(1.0, 0.01 * nb)  # e.g. nb=200 -> 2.0 bins
+        prof_smooth = cv2.GaussianBlur(prof_filled.reshape(1, -1), (0, 0), float(sigma_bins)).ravel().astype(np.float32)
+
+        center_est = float(prof_smooth[0])
+
+        # --- expand LUT to full-frame correction map ---
         yy, xx = np.indices((h, w), dtype=np.float32)
         r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
         rnorm = r / rmax
 
-        illum = p((rnorm ** 2).astype(np.float64)).astype(np.float32)
+        # bin centers in rnorm (for interpolation)
+        rm = (np.arange(nb, dtype=np.float32) + 0.5) * (rnorm_fit_max / nb)
+
+        illum = np.interp(
+            rnorm.ravel(),
+            rm,
+            prof_smooth,
+            left=prof_smooth[0],
+            right=prof_smooth[-1],
+        ).reshape(h, w).astype(np.float32)
+
         illum = np.maximum(illum, float(min_illum))
         corr = (center_est / illum).astype(np.float32)
 
         meta = {
+            "method": "lut",
             "center_xy": (cx, cy),
             "center_est": center_est,
-            "poly_deg": int(poly_deg),
-            "poly_coefs": [float(c) for c in coefs],
             "rnorm_fit_max": rnorm_fit_max,
+            "profile_bins": nb,
+            "ok_bins": ok_bins,
+            "hi_percentile": float(hi_percentile),
+            "smooth_sigma_px": float(smooth_sigma_px),
         }
         return corr, meta
+
 
     @staticmethod
     def _fit_ellipses_from_mask(mask_u8, min_area=10, min_major=12):
